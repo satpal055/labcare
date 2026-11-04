@@ -1,3 +1,6 @@
+
+const mongoose = require('mongoose')
+
 const Booking = require('../models/Booking')
 const Patient = require('../models/Patient')
 const Doctor = require('../models/Doctor')
@@ -22,6 +25,17 @@ const generateBookingId = async () => {
   return `BOOK-${String(nextNumber).padStart(6, '0')}`
 }
 
+const isValidId = (id) => mongoose.Types.ObjectId.isValid(id)
+
+const handleServerError = (res, error, label) => {
+  console.error(`${label}:`, error)
+
+  return res.status(500).json({
+    success: false,
+    message: 'Server error',
+  })
+}
+
 const createBooking = async (req, res) => {
   try {
     const {
@@ -31,14 +45,13 @@ const createBooking = async (req, res) => {
       bookingDate,
       sampleCollectionDate,
       discount = 0,
-      paymentStatus = 'pending',
       notes = '',
     } = req.body
 
-    if (!patient) {
+    if (!patient || !isValidId(patient)) {
       return res.status(400).json({
         success: false,
-        message: 'Patient is required',
+        message: 'Valid patient is required',
       })
     }
 
@@ -46,6 +59,13 @@ const createBooking = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'At least one test is required',
+      })
+    }
+
+    if (doctor && !isValidId(doctor)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid doctor ID',
       })
     }
 
@@ -83,6 +103,13 @@ const createBooking = async (req, res) => {
     const bookingTests = []
 
     for (const testId of tests) {
+      if (!isValidId(testId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid test ID',
+        })
+      }
+
       const testData = await Test.findOne({
         _id: testId,
         isActive: true,
@@ -108,7 +135,17 @@ const createBooking = async (req, res) => {
       0
     )
 
-    const discountAmount = Number(discount) || 0
+    const discountAmount = Number(discount)
+
+    if (
+      !Number.isFinite(discountAmount) ||
+      discountAmount < 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid discount amount',
+      })
+    }
 
     if (discountAmount > totalAmount) {
       return res.status(400).json({
@@ -139,7 +176,9 @@ const createBooking = async (req, res) => {
         sampleCollectionDate || null,
 
       status: 'pending',
-      paymentStatus,
+
+      // Payment must be confirmed separately by an admin.
+      paymentStatus: 'pending',
 
       totalAmount,
       discount: discountAmount,
@@ -150,19 +189,13 @@ const createBooking = async (req, res) => {
       createdBy: req.user.id,
     })
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Booking created successfully',
       booking,
     })
   } catch (error) {
-    console.error('CREATE BOOKING ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    })
+    return handleServerError(res, error, 'CREATE BOOKING ERROR')
   }
 }
 
@@ -199,11 +232,40 @@ const getBookings = async (req, res) => {
       ]
     }
 
+    const allowedStatuses = [
+      'pending',
+      'confirmed',
+      'sample-collected',
+      'processing',
+      'completed',
+      'cancelled',
+    ]
+
+    const allowedPaymentStatuses = [
+      'pending',
+      'partial',
+      'paid',
+    ]
+
     if (status.trim()) {
+      if (!allowedStatuses.includes(status.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid booking status filter',
+        })
+      }
+
       query.status = status.trim()
     }
 
     if (paymentStatus.trim()) {
+      if (!allowedPaymentStatuses.includes(paymentStatus.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid payment status filter',
+        })
+      }
+
       query.paymentStatus = paymentStatus.trim()
     }
 
@@ -212,24 +274,25 @@ const getBookings = async (req, res) => {
       .populate('doctor', 'doctorId firstName lastName specialization')
       .sort({ createdAt: -1 })
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: bookings.length,
       bookings,
     })
   } catch (error) {
-    console.error('GET BOOKINGS ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    })
+    return handleServerError(res, error, 'GET BOOKINGS ERROR')
   }
 }
 
 const getBookingById = async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID',
+      })
+    }
+
     const booking = await Booking.findById(req.params.id)
       .populate(
         'patient',
@@ -251,17 +314,12 @@ const getBookingById = async (req, res) => {
       })
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       booking,
     })
   } catch (error) {
-    console.error('GET BOOKING ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-    })
+    return handleServerError(res, error, 'GET BOOKING ERROR')
   }
 }
 
@@ -269,12 +327,10 @@ const updateBookingStatus = async (req, res) => {
   try {
     const { status } = req.body
 
+    // These statuses must use their dedicated workflow endpoints.
     const allowedStatuses = [
       'pending',
       'confirmed',
-      'sample-collected',
-      'processing',
-      'completed',
       'cancelled',
     ]
 
@@ -285,14 +341,14 @@ const updateBookingStatus = async (req, res) => {
       })
     }
 
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      {
-        new: true,
-        runValidators: true,
-      }
-    )
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID',
+      })
+    }
+
+    const booking = await Booking.findById(req.params.id)
 
     if (!booking) {
       return res.status(404).json({
@@ -301,18 +357,38 @@ const updateBookingStatus = async (req, res) => {
       })
     }
 
-    res.status(200).json({
+    if (
+      ['sample-collected', 'processing', 'completed'].includes(
+        booking.status
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking has already entered the processing workflow',
+      })
+    }
+
+    if (booking.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cancelled booking cannot be updated',
+      })
+    }
+
+    booking.status = status
+    await booking.save()
+
+    return res.status(200).json({
       success: true,
       message: 'Booking status updated successfully',
       booking,
     })
   } catch (error) {
-    console.error('UPDATE BOOKING STATUS ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-    })
+    return handleServerError(
+      res,
+      error,
+      'UPDATE BOOKING STATUS ERROR'
+    )
   }
 }
 
@@ -333,38 +409,21 @@ const updatePaymentStatus = async (req, res) => {
       })
     }
 
-    const booking = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { paymentStatus },
-      {
-        new: true,
-        runValidators: true,
-      }
-    )
-
-    if (!booking) {
-      return res.status(404).json({
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
         success: false,
-        message: 'Booking not found',
+        message: 'Invalid booking ID',
       })
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Payment status updated successfully',
-      booking,
-    })
-  } catch (error) {
-    console.error('UPDATE PAYMENT STATUS ERROR:', error)
+    // Only admins can confirm or modify payment status.
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only admin can update payment status',
+      })
+    }
 
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-    })
-  }
-}
-const collectSample = async (req, res) => {
-  try {
     const booking = await Booking.findById(req.params.id)
 
     if (!booking) {
@@ -374,17 +433,55 @@ const collectSample = async (req, res) => {
       })
     }
 
-    if (booking.status === 'cancelled') {
+    booking.paymentStatus = paymentStatus
+    await booking.save()
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment status updated successfully',
+      booking,
+    })
+  } catch (error) {
+    return handleServerError(
+      res,
+      error,
+      'UPDATE PAYMENT STATUS ERROR'
+    )
+  }
+}
+
+const collectSample = async (req, res) => {
+  try {
+    if (!isValidId(req.params.id)) {
       return res.status(400).json({
         success: false,
-        message: 'Cancelled booking sample cannot be collected',
+        message: 'Invalid booking ID',
       })
     }
 
-    if (booking.status === 'completed') {
+    const booking = await Booking.findById(req.params.id)
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found',
+      })
+    }
+
+    if (
+      booking.status === 'cancelled' ||
+      booking.status === 'completed'
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Completed booking sample cannot be collected',
+        message: 'Sample cannot be collected for this booking',
+      })
+    }
+
+    if (booking.status !== 'pending' && booking.status !== 'confirmed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking is not eligible for sample collection',
       })
     }
 
@@ -400,9 +497,7 @@ const collectSample = async (req, res) => {
 
     await booking.save()
 
-    const updatedBooking = await Booking.findById(
-      booking._id
-    )
+    const updatedBooking = await Booking.findById(booking._id)
       .populate(
         'patient',
         'patientId firstName lastName phone email gender'
@@ -416,23 +511,25 @@ const collectSample = async (req, res) => {
         'name email role'
       )
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Sample collected successfully',
       booking: updatedBooking,
     })
   } catch (error) {
-    console.error('COLLECT SAMPLE ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    })
+    return handleServerError(res, error, 'COLLECT SAMPLE ERROR')
   }
 }
+
 const startProcessing = async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID',
+      })
+    }
+
     const booking = await Booking.findById(req.params.id)
 
     if (!booking) {
@@ -442,18 +539,10 @@ const startProcessing = async (req, res) => {
       })
     }
 
-    if (booking.status === 'cancelled') {
-      return res.status(400).json({
-        success: false,
-        message: 'Cancelled booking cannot be processed',
-      })
-    }
-
     if (booking.status !== 'sample-collected') {
       return res.status(400).json({
         success: false,
-        message:
-          'Sample must be collected before processing starts',
+        message: 'Sample must be collected before processing starts',
       })
     }
 
@@ -461,9 +550,7 @@ const startProcessing = async (req, res) => {
 
     await booking.save()
 
-    const updatedBooking = await Booking.findById(
-      booking._id
-    )
+    const updatedBooking = await Booking.findById(booking._id)
       .populate(
         'patient',
         'patientId firstName lastName phone email gender'
@@ -477,23 +564,25 @@ const startProcessing = async (req, res) => {
         'name email role'
       )
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Booking processing started successfully',
       booking: updatedBooking,
     })
   } catch (error) {
-    console.error('START PROCESSING ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    })
+    return handleServerError(res, error, 'START PROCESSING ERROR')
   }
 }
+
 const completeBooking = async (req, res) => {
   try {
+    if (!isValidId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID',
+      })
+    }
+
     const booking = await Booking.findById(req.params.id)
 
     if (!booking) {
@@ -503,18 +592,10 @@ const completeBooking = async (req, res) => {
       })
     }
 
-    if (booking.status === 'cancelled') {
-      return res.status(400).json({
-        success: false,
-        message: 'Cancelled booking cannot be completed',
-      })
-    }
-
     if (booking.status !== 'processing') {
       return res.status(400).json({
         success: false,
-        message:
-          'Booking must be in processing status before completion',
+        message: 'Booking must be in processing status before completion',
       })
     }
 
@@ -522,9 +603,7 @@ const completeBooking = async (req, res) => {
 
     await booking.save()
 
-    const updatedBooking = await Booking.findById(
-      booking._id
-    )
+    const updatedBooking = await Booking.findById(booking._id)
       .populate(
         'patient',
         'patientId firstName lastName phone email gender'
@@ -538,21 +617,16 @@ const completeBooking = async (req, res) => {
         'name email role'
       )
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Booking completed successfully',
       booking: updatedBooking,
     })
   } catch (error) {
-    console.error('COMPLETE BOOKING ERROR:', error)
-
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message,
-    })
+    return handleServerError(res, error, 'COMPLETE BOOKING ERROR')
   }
 }
+
 module.exports = {
   createBooking,
   getBookings,

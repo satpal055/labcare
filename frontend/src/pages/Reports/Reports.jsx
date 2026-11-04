@@ -9,6 +9,14 @@ function Reports() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // Create Report states
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [completedBookings, setCompletedBookings] = useState([])
+  const [bookingLoading, setBookingLoading] = useState(false)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [selectedBooking, setSelectedBooking] = useState('')
+
   const fetchReports = async () => {
     try {
       setLoading(true)
@@ -45,6 +53,76 @@ function Reports() {
     fetchReports()
   }, [search, status])
 
+  // Fetch completed bookings for report creation
+  const handleOpenCreateModal = async () => {
+    setShowCreateModal(true)
+    setBookingLoading(true)
+    setCreateError('')
+    setSelectedBooking('')
+    setCompletedBookings([])
+
+    try {
+      const response = await api.get(
+        '/bookings?status=completed'
+      )
+
+      const bookings = response.data.bookings || []
+
+      // Do not show bookings that already have reports
+      const reportedBookingIds = new Set(
+        reports.map((report) => report.bookingId)
+      )
+
+      const availableBookings = bookings.filter(
+        (booking) =>
+          booking.status === 'completed' &&
+          !reportedBookingIds.has(booking.bookingId)
+      )
+
+      setCompletedBookings(availableBookings)
+    } catch (error) {
+      console.error('FETCH COMPLETED BOOKINGS ERROR:', error)
+
+      setCreateError(
+        error.response?.data?.message ||
+          'Failed to load completed bookings'
+      )
+    } finally {
+      setBookingLoading(false)
+    }
+  }
+
+  // Create report
+  const handleCreateReport = async () => {
+    if (!selectedBooking) {
+      setCreateError('Please select a booking first.')
+      return
+    }
+
+    try {
+      setCreateLoading(true)
+      setCreateError('')
+
+      await api.post('/reports', {
+        bookingId: selectedBooking,
+      })
+
+      setShowCreateModal(false)
+      setSelectedBooking('')
+
+      await fetchReports()
+    } catch (error) {
+      console.error('CREATE REPORT ERROR:', error)
+
+      setCreateError(
+        error.response?.data?.message ||
+          'Failed to create report'
+      )
+    } finally {
+      setCreateLoading(false)
+    }
+  }
+
   const getStatusClasses = (value) => {
     const classes = {
       draft:
@@ -75,14 +153,25 @@ function Reports() {
   return (
     <div className="mx-auto max-w-7xl space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">
-          Laboratory Reports
-        </h1>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">
+            Laboratory Reports
+          </h1>
 
-        <p className="mt-1 text-sm text-slate-500">
-          Manage patient laboratory reports and test results.
-        </p>
+          <p className="mt-1 text-sm text-slate-500">
+            Manage patient laboratory reports and test results.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleOpenCreateModal}
+          className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700"
+        >
+          <span className="mr-2 text-lg">+</span>
+          Create Report
+        </button>
       </div>
 
       {/* Filters */}
@@ -132,7 +221,7 @@ function Reports() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Reports Table */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-6 py-5">
           <h2 className="text-lg font-semibold text-slate-900">
@@ -159,8 +248,7 @@ function Reports() {
               </p>
 
               <p className="mt-1 text-sm text-slate-500">
-                Completed bookings will appear here
-                after a report is created.
+                Create a report from a completed booking.
               </p>
             </div>
           </div>
@@ -169,30 +257,12 @@ function Reports() {
             <table className="min-w-full">
               <thead className="bg-slate-50">
                 <tr className="border-b border-slate-200 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  <th className="px-6 py-4">
-                    Report
-                  </th>
-
-                  <th className="px-6 py-4">
-                    Patient
-                  </th>
-
-                  <th className="px-6 py-4">
-                    Booking
-                  </th>
-
-                  <th className="px-6 py-4">
-                    Tests
-                  </th>
-
-                  <th className="px-6 py-4">
-                    Date
-                  </th>
-
-                  <th className="px-6 py-4">
-                    Status
-                  </th>
-
+                  <th className="px-6 py-4">Report</th>
+                  <th className="px-6 py-4">Patient</th>
+                  <th className="px-6 py-4">Booking</th>
+                  <th className="px-6 py-4">Tests</th>
+                  <th className="px-6 py-4">Date</th>
+                  <th className="px-6 py-4">Status</th>
                   <th className="px-6 py-4 text-right">
                     Action
                   </th>
@@ -241,9 +311,7 @@ function Reports() {
                           report.status
                         )}`}
                       >
-                        {formatStatus(
-                          report.status
-                        )}
+                        {formatStatus(report.status)}
                       </span>
                     </td>
 
@@ -262,6 +330,155 @@ function Reports() {
           </div>
         )}
       </div>
+
+      {/* Create Report Modal */}
+      {showCreateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          onClick={() => {
+            if (!createLoading) {
+              setShowCreateModal(false)
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Create Laboratory Report
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  Select a completed booking to generate a report.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                disabled={createLoading}
+                className="rounded-lg px-3 py-2 text-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+                aria-label="Close modal"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="space-y-4 p-6">
+              {createError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {createError}
+                </div>
+              )}
+
+              {bookingLoading ? (
+                <div className="flex min-h-32 items-center justify-center">
+                  <p className="text-sm text-slate-500">
+                    Loading completed bookings...
+                  </p>
+                </div>
+              ) : completedBookings.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center">
+                  <p className="font-semibold text-slate-700">
+                    No eligible bookings available
+                  </p>
+
+                  <p className="mt-2 text-sm text-slate-500">
+                    All completed bookings may already have reports,
+                    or there are no completed bookings yet.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">
+                    Select Completed Booking
+                  </label>
+
+                  <select
+                    value={selectedBooking}
+                    onChange={(event) => {
+                      setSelectedBooking(event.target.value)
+                      setCreateError('')
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
+                  >
+                    <option value="">
+                      Choose a booking
+                    </option>
+
+                    {completedBookings.map((booking) => (
+                      <option
+                        key={booking._id}
+                        value={booking._id}
+                      >
+                        {booking.bookingId} — {booking.patientName}
+                      </option>
+                    ))}
+                  </select>
+
+                  {selectedBooking && (
+                    <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                      {(() => {
+                        const booking = completedBookings.find(
+                          (item) => item._id === selectedBooking
+                        )
+
+                        return booking ? (
+                          <>
+                            <p className="text-sm font-semibold text-blue-900">
+                              {booking.patientName}
+                            </p>
+
+                            <p className="mt-1 text-xs text-blue-700">
+                              Booking: {booking.bookingId}
+                            </p>
+
+                            <p className="mt-1 text-xs text-blue-700">
+                              Tests: {booking.tests?.length || 0}
+                            </p>
+                          </>
+                        ) : null
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 px-6 py-5 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                disabled={createLoading}
+                className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+ 
+              <button
+                type="button"
+                onClick={handleCreateReport}
+                disabled={
+                  !selectedBooking ||
+                  createLoading ||
+                  bookingLoading
+                }
+                className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createLoading
+                  ? 'Creating Report...'
+                  : 'Create Report'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

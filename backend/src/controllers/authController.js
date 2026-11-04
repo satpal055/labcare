@@ -17,7 +17,15 @@ const generateToken = (user) => {
 
 const registerUser = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body
+    // Only Admin can create Staff accounts
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only admin can create staff accounts',
+      })
+    }
+
+    const { name, email, password } = req.body
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -43,7 +51,7 @@ const registerUser = async (req, res) => {
       name,
       email: email.toLowerCase(),
       password: hashedPassword,
-      role: role || 'staff',
+      role: 'staff',
     })
 
     res.status(201).json({
@@ -57,13 +65,14 @@ const registerUser = async (req, res) => {
       },
     })
   } catch (error) {
+    console.error('REGISTER ERROR:', error)
+
     res.status(500).json({
       success: false,
       message: 'Server error',
     })
   }
 }
-
 const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body
@@ -114,11 +123,10 @@ const loginUser = async (req, res) => {
   } catch (error) {
   console.error('LOGIN ERROR:', error)
 
-  res.status(500).json({
-    success: false,
-    message: 'Server error',
-    error: error.message,
-  })
+res.status(500).json({
+  success: false,
+  message: 'Server error',
+})
 }
 }
 
